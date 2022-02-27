@@ -1,12 +1,18 @@
 package com.tenniscourts.reservations;
 
+import com.tenniscourts.exceptions.AlreadyExistsEntityException;
 import com.tenniscourts.exceptions.EntityNotFoundException;
+import com.tenniscourts.guests.Guest;
+import com.tenniscourts.guests.GuestRepository;
+import com.tenniscourts.schedules.Schedule;
+import com.tenniscourts.schedules.ScheduleRepository;
 import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 
 @Service
 @AllArgsConstructor
@@ -16,8 +22,33 @@ public class ReservationService {
 
     private final ReservationMapper reservationMapper;
 
+    private final ScheduleRepository scheduleRepository;
+
+    private final GuestRepository guestRepository;
+
     public ReservationDTO bookReservation(CreateReservationRequestDTO createReservationRequestDTO) {
-        throw new UnsupportedOperationException();
+        Long guestId = createReservationRequestDTO.getGuestId();
+        Long scheduleId = createReservationRequestDTO.getScheduleId();
+
+        Guest guest = guestRepository.findById(guestId).orElseThrow(() -> {
+            throw new EntityNotFoundException("Guest does not exist.");
+        });
+        Schedule schedule = scheduleRepository.findById(scheduleId).orElseThrow(() -> {
+            throw new EntityNotFoundException("Schedule does not exist.");
+        });
+        if (!schedule.getReservations().isEmpty()) {
+            throw new AlreadyExistsEntityException("This time slot is already booked.");
+        }
+
+        Reservation reservation = Reservation.builder()
+                .guest(guest)
+                .schedule(schedule)
+                .value(BigDecimal.TEN)
+                .reservationStatus(ReservationStatus.READY_TO_PLAY)
+                .build();
+        schedule.addReservation(reservation);
+
+        return reservationMapper.map(reservationRepository.save(reservation));
     }
 
     public ReservationDTO findReservation(Long reservationId) {
@@ -47,6 +78,9 @@ public class ReservationService {
         reservation.setReservationStatus(status);
         reservation.setValue(reservation.getValue().subtract(refundValue));
         reservation.setRefundValue(refundValue);
+        Schedule schedule = reservation.getSchedule();
+        schedule.setReservations(new ArrayList<>());
+        reservation.setSchedule(schedule);
 
         return reservationRepository.save(reservation);
     }
@@ -62,23 +96,23 @@ public class ReservationService {
     }
 
     public BigDecimal getRefundValue(Reservation reservation) {
-        long hours = ChronoUnit.HOURS.between(LocalDateTime.now(), reservation.getSchedule().getStartDateTime());
+        long minutes = ChronoUnit.MINUTES.between(LocalDateTime.now(), reservation.getSchedule().getStartDateTime());
 
-        if (hours >= 24) {
+        if (minutes >= 1440) {
             return reservation.getValue();
+        } else if (minutes >= 720) {
+            return reservation.getValue().multiply(BigDecimal.valueOf(0.75));
+        } else if (minutes >= 120) {
+            return reservation.getValue().multiply(BigDecimal.valueOf(0.5));
+        } else if (minutes >= 1) {
+            return reservation.getValue().multiply(BigDecimal.valueOf(0.25));
         }
 
         return BigDecimal.ZERO;
     }
 
-    /*TODO: This method actually not fully working, find a way to fix the issue when it's throwing the error:
-            "Cannot reschedule to the same slot.*/
     public ReservationDTO rescheduleReservation(Long previousReservationId, Long scheduleId) {
         Reservation previousReservation = cancel(previousReservationId);
-
-        if (scheduleId.equals(previousReservation.getSchedule().getId())) {
-            throw new IllegalArgumentException("Cannot reschedule to the same slot.");
-        }
 
         previousReservation.setReservationStatus(ReservationStatus.RESCHEDULED);
         reservationRepository.save(previousReservation);
